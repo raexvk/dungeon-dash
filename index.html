@@ -1,54 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dungeon Dash</title>
-  <link rel="stylesheet" href="style.css">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #root { width: 100%; height: 100%; overflow: hidden; background: #0A0A0F; }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
 </head>
 <body>
-  <div id="app">
-
-    <!-- Grid + overlay -->
-    <div id="game-area">
-      <pre id="grid"></pre>
-      <div id="overlay" class="hidden">
-        <div id="overlay-box">
-          <div id="overlay-icon"></div>
-          <div id="overlay-title"></div>
-          <div id="overlay-sub"></div>
-          <button id="overlay-btn">[ PLAY AGAIN ]</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Side panel -->
-    <div id="panel">
-      <div id="panel-title">DUNGEON DASH</div>
-      <div class="divider">────────────────</div>
-      <div class="stat"><span class="lbl">LEVEL</span><span id="ui-level">1 / 5</span></div>
-      <div class="stat"><span class="lbl">STAGE</span><span id="ui-name">—</span></div>
-      <div class="stat"><span class="lbl">LIVES</span><span id="ui-lives">❤️❤️❤️</span></div>
-      <div class="stat"><span class="lbl">STEPS</span><span id="ui-steps">0</span></div>
-      <div class="divider">────────────────</div>
-      <div id="legend">
-        <div><span class="sym s-player">@</span> you</div>
-        <div><span class="sym s-wall">#</span> wall</div>
-        <div><span class="sym s-trap">^</span> spike trap</div>
-        <div><span class="sym s-monster">M</span> monster</div>
-        <div><span class="sym s-exit">&gt;</span> exit portal</div>
-        <div><span class="sym s-gold">$</span> gold (win!)</div>
-      </div>
-      <div class="divider">────────────────</div>
-      <div id="controls">WASD / arrow keys to move</div>
-      <div id="msg"></div>
-    </div>
-
-  </div>
-
-  <script src="levels.js"></script>
-  <script src="renderer.js"></script>
-  <script src="engine.js"></script>
-  <script src="main.js"></script>
+  <div id="root"></div>
+  <script type="module" src="/app/main.tsx"></script>
 </body>
 </html>
