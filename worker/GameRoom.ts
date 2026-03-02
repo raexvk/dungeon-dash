@@ -115,11 +115,11 @@ export class GameRoom {
     ws: WebSocket,
     msg: Extract<ClientMessage, { type: 'join' }>,
   ): void {
-    if (this.phase !== 'lobby' || this.lobbyPlayers.length >= 5) {
+    if (this.phase !== 'lobby') {
       ws.send(
         JSON.stringify({
           type: 'error',
-          message: 'Room full or game in progress',
+          message: 'Game already in progress',
         }),
       );
       return;
