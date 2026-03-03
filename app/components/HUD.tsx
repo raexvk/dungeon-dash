@@ -83,7 +83,7 @@ function Hearts({ hp, maxHp }: { hp: number; maxHp: number }) {
   return <span style={{ display: 'flex', gap: 1 }}>{hearts}</span>;
 }
 
-function PlayerCard({
+export function PlayerCard({
   player,
   isLocal,
   isMultiplayer,
@@ -479,34 +479,83 @@ export function HUD({
         <SettingsPanel onClose={() => setSettingsOpen(false)} />
       )}
 
-      {/* Bottom Bar */}
+    </>
+  );
+}
+
+const marqueeKeyframes = `
+@keyframes playerbar-marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+`;
+
+export function PlayerBar({
+  players,
+  localPlayerId,
+}: {
+  players: Player[];
+  localPlayerId: number;
+}) {
+  const isMultiplayer = players.length > 1;
+  const shouldScroll = players.length > 3;
+
+  const cards = players.map((player) => (
+    <PlayerCard
+      key={player.id}
+      player={player}
+      isLocal={player.id === localPlayerId}
+      isMultiplayer={isMultiplayer}
+    />
+  ));
+
+  return (
+    <>
+      {shouldScroll && <style>{marqueeKeyframes}</style>}
       <div
         style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
+          width: '100%',
+          height: 40,
+          background: '#0A0A0F',
+          borderTop: '1px solid #222',
+          overflow: 'hidden',
           display: 'flex',
-          flexDirection: 'column',
           alignItems: 'center',
-          gap: 6,
-          padding: '8px 16px',
-          background: 'linear-gradient(to top, #0A0A0Fcc, transparent)',
-          pointerEvents: 'none',
-          zIndex: 10,
+          flexShrink: 0,
         }}
       >
-        {players.map((player) => (
-          <PlayerCard
-            key={player.id}
-            player={player}
-            isLocal={player.id === localPlayerId}
-            isMultiplayer={players.length > 1}
-          />
-        ))}
-
-        {/* Controls help strip */}
-        <ControlsHelpBar />
+        {shouldScroll ? (
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              animation: 'playerbar-marquee 15s linear infinite',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {cards}
+            {/* Duplicate for seamless loop */}
+            {players.map((player) => (
+              <PlayerCard
+                key={`dup-${player.id}`}
+                player={player}
+                isLocal={player.id === localPlayerId}
+                isMultiplayer={isMultiplayer}
+              />
+            ))}
+          </div>
+        ) : (
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              justifyContent: 'center',
+              width: '100%',
+            }}
+          >
+            {cards}
+          </div>
+        )}
       </div>
     </>
   );

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.wrangler/
+.playwright-mcp/
+app.config.timestamp_*.js
+*.local
+.env
+.env.*
+.DS_Store

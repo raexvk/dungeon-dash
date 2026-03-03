@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GameCanvas } from './GameCanvas';
-import { HUD } from './HUD';
+import { HUD, PlayerBar } from './HUD';
 import { EventFeed } from './EventFeed';
 import { Minimap } from './Minimap';
 import { DeathOverlay } from './DeathOverlay';
@@ -70,6 +70,7 @@ export function SoloGame() {
       // Play sound effects
       if (action === 'move') playSound('footstep');
       if (action === 'attack') playSound('swordClang');
+      if (action === 'useAbility') playSound('swordClang');
 
       handleInput(action, dir, ability);
     },
@@ -113,7 +114,8 @@ export function SoloGame() {
   return (
     <div
       style={{
-        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
         width: '100vw',
         height: '100vh',
         background: '#0A0A0F',
@@ -122,9 +124,9 @@ export function SoloGame() {
     >
       <div
         style={{
+          flex: 1,
           position: 'relative',
-          width: '100%',
-          height: '100%',
+          overflow: 'hidden',
         }}
       >
         <GameCanvas
@@ -156,6 +158,8 @@ export function SoloGame() {
           />
         )}
       </div>
+
+      <PlayerBar players={gameState.players} localPlayerId={0} />
 
       <DeathOverlay
         visible={isDead || isGameOver}

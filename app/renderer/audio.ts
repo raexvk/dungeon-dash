@@ -2,6 +2,40 @@ let audioCtx: AudioContext | null = null;
 let sfxMuted: boolean = false;
 let musicMuted: boolean = false;
 
+// ── Preloaded MP3 sounds ──
+let deathAudio: HTMLAudioElement | null = null;
+let shootAudio: HTMLAudioElement | null = null;
+let hitAudio: HTMLAudioElement | null = null;
+let entityHitAudio: HTMLAudioElement | null = null;
+
+function loadDeathSound(): void {
+  const audio = new Audio('/dog_laughing_meme.mp3');
+  audio.preload = 'auto';
+  audio.addEventListener('canplaythrough', () => { deathAudio = audio; }, { once: true });
+  audio.addEventListener('error', () => console.warn('Failed to load death sound MP3'));
+}
+
+function loadShootSound(): void {
+  const audio = new Audio('/duck.mp3');
+  audio.preload = 'auto';
+  audio.addEventListener('canplaythrough', () => { shootAudio = audio; }, { once: true });
+  audio.addEventListener('error', () => console.warn('Failed to load shoot sound MP3'));
+}
+
+function loadHitSound(): void {
+  const audio = new Audio('/faaa.mp3');
+  audio.preload = 'auto';
+  audio.addEventListener('canplaythrough', () => { hitAudio = audio; }, { once: true });
+  audio.addEventListener('error', () => console.warn('Failed to load hit sound MP3'));
+}
+
+function loadEntityHitSound(): void {
+  const audio = new Audio('/henta_ahh.mp3');
+  audio.preload = 'auto';
+  audio.addEventListener('canplaythrough', () => { entityHitAudio = audio; }, { once: true });
+  audio.addEventListener('error', () => console.warn('Failed to load entity hit sound MP3'));
+}
+
 // ── BGM State ──
 let bgmPlaying = false;
 let bgmTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -45,6 +79,10 @@ export function isMuted(): boolean {
 function getCtx(): AudioContext {
   if (!audioCtx) {
     audioCtx = new AudioContext();
+    loadDeathSound();
+    loadShootSound();
+    loadHitSound();
+    loadEntityHitSound();
   }
   return audioCtx;
 }
@@ -83,17 +121,24 @@ export function playSound(type: string): void {
     }
 
     case 'swordClang': {
-      const osc = ctx.createOscillator();
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(800, now);
-      osc.frequency.linearRampToValueAtTime(200, now + 0.1);
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.3, now);
-      gain.gain.linearRampToValueAtTime(0.01, now + 0.1);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.1);
+      if (shootAudio) {
+        const clone = shootAudio.cloneNode() as HTMLAudioElement;
+        clone.volume = 0.7;
+        clone.play().catch(() => {});
+      } else {
+        // Procedural fallback
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(800, now);
+        osc.frequency.linearRampToValueAtTime(200, now + 0.1);
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.linearRampToValueAtTime(0.01, now + 0.1);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.1);
+      }
       break;
     }
 
@@ -113,100 +158,56 @@ export function playSound(type: string): void {
     }
 
     case 'damage': {
-      const noise = ctx.createBufferSource();
-      noise.buffer = createNoiseBuffer(ctx, 0.1);
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.4, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-      noise.connect(gain);
-      gain.connect(ctx.destination);
-      noise.start(now);
-      noise.stop(now + 0.1);
+      if (hitAudio) {
+        const clone = hitAudio.cloneNode() as HTMLAudioElement;
+        clone.volume = 0.6;
+        clone.play().catch(() => {});
+      } else {
+        // Procedural fallback
+        const noise = ctx.createBufferSource();
+        noise.buffer = createNoiseBuffer(ctx, 0.1);
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.4, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+        noise.connect(gain);
+        gain.connect(ctx.destination);
+        noise.start(now);
+        noise.stop(now + 0.1);
+      }
       break;
     }
 
     case 'death': {
-      // Stop BGM so the death sound is heard clearly
       stopBGM();
 
-      // "FAHHHHH" — male voice screaming, descending pitch (~2.5s)
-      const dur = 2.5;
-
-      // Main vocal cord — square wave at male chest voice pitch
-      // Square wave naturally sounds more "voice-like" than sawtooth
-      const vocal = ctx.createOscillator();
-      vocal.type = 'square';
-      vocal.frequency.setValueAtTime(160, now);        // Start: mid male voice
-      vocal.frequency.setValueAtTime(155, now + 0.08);  // "F" → "AH" onset
-      vocal.frequency.linearRampToValueAtTime(120, now + 0.8);  // Descend
-      vocal.frequency.linearRampToValueAtTime(85, now + dur);   // Trail off low
-
-      // Detuned copy for chorus/thickness
-      const vocal2 = ctx.createOscillator();
-      vocal2.type = 'square';
-      vocal2.frequency.setValueAtTime(163, now);
-      vocal2.frequency.setValueAtTime(158, now + 0.08);
-      vocal2.frequency.linearRampToValueAtTime(122, now + 0.8);
-      vocal2.frequency.linearRampToValueAtTime(87, now + dur);
-
-      // Formant F1 — "AH" vowel ~730Hz (lowpass to shape it)
-      const lpFilter = ctx.createBiquadFilter();
-      lpFilter.type = 'lowpass';
-      lpFilter.frequency.setValueAtTime(400, now);         // Closed for "F"
-      lpFilter.frequency.linearRampToValueAtTime(1800, now + 0.06); // Open for "AH"
-      lpFilter.frequency.linearRampToValueAtTime(1200, now + 0.5);
-      lpFilter.frequency.linearRampToValueAtTime(600, now + dur);   // Close off
-      lpFilter.Q.setValueAtTime(2, now);
-
-      // Master volume envelope
-      const masterGain = ctx.createGain();
-      masterGain.gain.setValueAtTime(0.0, now);
-      masterGain.gain.linearRampToValueAtTime(0.4, now + 0.06);  // Sharp attack
-      masterGain.gain.setValueAtTime(0.35, now + 0.5);
-      masterGain.gain.linearRampToValueAtTime(0.15, now + 1.5);
-      masterGain.gain.linearRampToValueAtTime(0.0, now + dur);
-
-      vocal.connect(lpFilter);
-      vocal2.connect(lpFilter);
-      lpFilter.connect(masterGain);
-      masterGain.connect(ctx.destination);
-      vocal.start(now);
-      vocal.stop(now + dur);
-      vocal2.start(now);
-      vocal2.stop(now + dur);
-
-      // "F" consonant — noise burst at the start
-      const fNoise = ctx.createBufferSource();
-      fNoise.buffer = createNoiseBuffer(ctx, 0.12);
-      const fFilter = ctx.createBiquadFilter();
-      fFilter.type = 'highpass';
-      fFilter.frequency.setValueAtTime(3000, now);
-      const fGain = ctx.createGain();
-      fGain.gain.setValueAtTime(0.3, now);
-      fGain.gain.linearRampToValueAtTime(0.0, now + 0.1);
-      fNoise.connect(fFilter);
-      fFilter.connect(fGain);
-      fGain.connect(ctx.destination);
-      fNoise.start(now);
-      fNoise.stop(now + 0.12);
-
-      // Breath/air throughout — gives "HHHH" sustain
-      const breath = ctx.createBufferSource();
-      breath.buffer = createNoiseBuffer(ctx, dur);
-      const breathBP = ctx.createBiquadFilter();
-      breathBP.type = 'bandpass';
-      breathBP.frequency.setValueAtTime(2000, now);
-      breathBP.Q.setValueAtTime(0.3, now);
-      const breathGain = ctx.createGain();
-      breathGain.gain.setValueAtTime(0.0, now);
-      breathGain.gain.linearRampToValueAtTime(0.08, now + 0.1);
-      breathGain.gain.setValueAtTime(0.06, now + 0.5);
-      breathGain.gain.linearRampToValueAtTime(0.0, now + dur);
-      breath.connect(breathBP);
-      breathBP.connect(breathGain);
-      breathGain.connect(ctx.destination);
-      breath.start(now);
-      breath.stop(now + dur);
+      if (deathAudio) {
+        deathAudio.currentTime = 0;
+        deathAudio.volume = 1.0;
+        deathAudio.play().catch(() => {});
+      } else {
+        // Procedural fallback if MP3 hasn't loaded
+        const dur = 2.5;
+        const vocal = ctx.createOscillator();
+        vocal.type = 'square';
+        vocal.frequency.setValueAtTime(160, now);
+        vocal.frequency.linearRampToValueAtTime(120, now + 0.8);
+        vocal.frequency.linearRampToValueAtTime(85, now + dur);
+        const lpFilter = ctx.createBiquadFilter();
+        lpFilter.type = 'lowpass';
+        lpFilter.frequency.setValueAtTime(400, now);
+        lpFilter.frequency.linearRampToValueAtTime(1800, now + 0.06);
+        lpFilter.frequency.linearRampToValueAtTime(600, now + dur);
+        lpFilter.Q.setValueAtTime(2, now);
+        const masterGain = ctx.createGain();
+        masterGain.gain.setValueAtTime(0.0, now);
+        masterGain.gain.linearRampToValueAtTime(0.4, now + 0.06);
+        masterGain.gain.linearRampToValueAtTime(0.0, now + dur);
+        vocal.connect(lpFilter);
+        lpFilter.connect(masterGain);
+        masterGain.connect(ctx.destination);
+        vocal.start(now);
+        vocal.stop(now + dur);
+      }
       break;
     }
 
@@ -292,6 +293,15 @@ export function playSound(type: string): void {
       gain.connect(ctx.destination);
       osc.start(now);
       osc.stop(now + 0.2);
+      break;
+    }
+
+    case 'entityHit': {
+      if (entityHitAudio) {
+        const clone = entityHitAudio.cloneNode() as HTMLAudioElement;
+        clone.volume = 0.6;
+        clone.play().catch(() => {});
+      }
       break;
     }
   }
@@ -457,4 +467,36 @@ export function stopBGM(): void {
 
 export function isBGMPlaying(): boolean {
   return bgmPlaying;
+}
+
+// ── Key BGM (spider_man.mp3) ──
+let keyBgmAudio: HTMLAudioElement | null = null;
+let keyBgmPlaying = false;
+
+function ensureKeyBgm(): HTMLAudioElement {
+  if (!keyBgmAudio) {
+    keyBgmAudio = new Audio('/spider_man.mp3');
+    keyBgmAudio.loop = true;
+    keyBgmAudio.volume = 0.6;
+    keyBgmAudio.preload = 'auto';
+  }
+  return keyBgmAudio;
+}
+
+export function startKeyBGM(): void {
+  if (keyBgmPlaying || musicMuted) return;
+  stopBGM(); // stop the normal dungeon BGM
+  keyBgmPlaying = true;
+  const audio = ensureKeyBgm();
+  audio.currentTime = 0;
+  audio.play().catch(() => {});
+}
+
+export function stopKeyBGM(): void {
+  if (!keyBgmPlaying) return;
+  keyBgmPlaying = false;
+  if (keyBgmAudio) {
+    keyBgmAudio.pause();
+    keyBgmAudio.currentTime = 0;
+  }
 }

@@ -9,6 +9,7 @@ export function useSoloGameState() {
   const checkpointRef = useRef(0);
   const monsterIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const energyAccumRef = useRef({ move: 0, shoot: 0 });
 
   // Continuous monster movement interval
   useEffect(() => {
@@ -57,6 +58,24 @@ export function useSoloGameState() {
           changed = true;
         }
       }
+
+      // Energy recharge
+      const ea = energyAccumRef.current;
+      ea.move += 33;
+      ea.shoot += 33;
+      for (const player of state.players) {
+        if (ea.move >= 800 && player.moveEnergy < player.maxMoveEnergy) {
+          player.moveEnergy++;
+          changed = true;
+        }
+        if (ea.shoot >= 1500 && player.shootEnergy < player.maxShootEnergy) {
+          player.shootEnergy++;
+          changed = true;
+        }
+      }
+      if (ea.move >= 800) ea.move = 0;
+      if (ea.shoot >= 1500) ea.shoot = 0;
+
       if (changed) {
         setGameState({ ...state });
       }
@@ -73,6 +92,7 @@ export function useSoloGameState() {
   const startGame = useCallback((level: number = 0) => {
     const state = initializeSoloGame(level);
     stateRef.current = state;
+    energyAccumRef.current = { move: 0, shoot: 0 };
     setGameState({ ...state });
     setLevelIndex(level);
     // Update checkpoint to the highest level started
@@ -114,6 +134,11 @@ export function useSoloGameState() {
             newPlayer.hasFireball = prevPlayer.hasFireball;
             newPlayer.hasFreeze = prevPlayer.hasFreeze;
             newPlayer.hasBow = prevPlayer.hasBow;
+            // Carry over energy
+            newPlayer.moveEnergy = prevPlayer.moveEnergy;
+            newPlayer.maxMoveEnergy = prevPlayer.maxMoveEnergy;
+            newPlayer.shootEnergy = prevPlayer.shootEnergy;
+            newPlayer.maxShootEnergy = prevPlayer.maxShootEnergy;
 
             stateRef.current = newState;
             setGameState({ ...newState });

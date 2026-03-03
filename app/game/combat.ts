@@ -276,6 +276,16 @@ export function resolveTelegraphs(state: GameState): void {
 
             player.hp -= damage;
 
+            if (damage > 0) {
+              state.events.push({
+                tick: state.tick,
+                type: 'playerHit',
+                message: `${player.name} took ${damage} damage from ${telegraph.type}`,
+                playerId: player.id,
+                targetId: telegraph.sourceId,
+              });
+            }
+
             if (player.hp <= 0) {
               player.hp = 0;
               player.alive = false;
@@ -357,6 +367,13 @@ export function tickHazards(state: GameState): void {
           if (player.r === tile.r && player.c === tile.c) {
             player.hp -= 1;
 
+            state.events.push({
+              tick: state.tick,
+              type: 'playerHit',
+              message: `${player.name} took 1 damage from ${hazard.type}`,
+              playerId: player.id,
+            });
+
             if (player.hp <= 0) {
               player.hp = 0;
               player.alive = false;
@@ -413,6 +430,73 @@ function isProjectilePassable(state: GameState, r: number, c: number): boolean {
   return true;
 }
 
+// ── Projectile → Player hit helper ──
+
+function handleProjectilePlayerHit(
+  state: GameState,
+  proj: Projectile,
+  player: Player,
+): void {
+  if (player.invulnFrames > 0) return;
+
+  let damage = proj.damage;
+
+  // Shield orb negates damage
+  if (player.shield) {
+    damage = 0;
+    player.shield = false;
+  } else {
+    const shieldBonus = player.shieldEquip?.defBonus ?? 0;
+    damage = Math.max(1, proj.damage - player.def - shieldBonus);
+  }
+
+  player.hp -= damage;
+
+  if (damage > 0) {
+    state.events.push({
+      tick: state.tick,
+      type: 'playerHit',
+      message: `${player.name} took ${damage} damage from a projectile`,
+      playerId: player.id,
+      targetId: proj.ownerId >= 0 ? proj.ownerId : undefined,
+    });
+  }
+
+  if (player.hp <= 0) {
+    player.hp = 0;
+    player.alive = false;
+    player.deaths++;
+    player.score += SCORE_VALUES.death;
+
+    if (state.players.length > 1 && player.respawnsLeft > 0) {
+      player.respawnTimer = 150;
+    }
+
+    state.events.push({
+      tick: state.tick,
+      type: 'playerDied',
+      message: `${player.name} was hit by a projectile`,
+      playerId: player.id,
+    });
+
+    if (player.hasKey) {
+      player.hasKey = false;
+      state.key.heldBy = -1;
+      state.key.r = player.r;
+      state.key.c = player.c;
+
+      state.events.push({
+        tick: state.tick,
+        type: 'keyDrop',
+        message: `${player.name} dropped the key!`,
+        playerId: player.id,
+      });
+    }
+  }
+
+  player.invulnFrames = invulnTime(state);
+}
+
 // ── Process Projectiles ──
 
 export function processProjectiles(state: GameState): void {
@@ -423,6 +507,18 @@ export function processProjectiles(state: GameState): void {
     if (!isProjectilePassable(state, proj.r, proj.c)) {
       continue; // Remove projectile
     }
+
+    // Pre-move: check player collision at current position (catches point-blank hits)
+    let preHit = false;
+    for (const player of state.players) {
+      if (!player.alive || player.id === proj.ownerId) continue;
+      if (player.r === proj.r && player.c === proj.c) {
+        handleProjectilePlayerHit(state, proj, player);
+        preHit = true;
+        break;
+      }
+    }
+    if (preHit) continue; // Consume projectile, skip the move
 
     // Move projectile
     proj.r += proj.dir.dr;
@@ -467,54 +563,7 @@ export function processProjectiles(state: GameState): void {
       for (const player of state.players) {
         if (!player.alive || player.id === proj.ownerId) continue;
         if (player.r === proj.r && player.c === proj.c) {
-          if (player.invulnFrames <= 0) {
-            let damage = proj.damage;
-
-            // Shield orb negates damage
-            if (player.shield) {
-              damage = 0;
-              player.shield = false;
-            } else {
-              const shieldBonus = player.shieldEquip?.defBonus ?? 0;
-              damage = Math.max(1, proj.damage - player.def - shieldBonus);
-            }
-
-            player.hp -= damage;
-
-            if (player.hp <= 0) {
-              player.hp = 0;
-              player.alive = false;
-              player.deaths++;
-              player.score += SCORE_VALUES.death;
-
-              if (state.players.length > 1 && player.respawnsLeft > 0) {
-                player.respawnTimer = 150;
-              }
-
-              state.events.push({
-                tick: state.tick,
-                type: 'playerDied',
-                message: `${player.name} was hit by a projectile`,
-                playerId: player.id,
-              });
-
-              if (player.hasKey) {
-                player.hasKey = false;
-                state.key.heldBy = -1;
-                state.key.r = player.r;
-                state.key.c = player.c;
-
-                state.events.push({
-                  tick: state.tick,
-                  type: 'keyDrop',
-                  message: `${player.name} dropped the key!`,
-                  playerId: player.id,
-                });
-              }
-            }
-
-            player.invulnFrames = invulnTime(state);
-          }
+          handleProjectilePlayerHit(state, proj, player);
           hit = true;
           break;
         }
@@ -554,6 +603,16 @@ export function resolvePlayerVsPlayer(
 
   target.hp -= damage;
   attacker.attackCooldown = 2;
+
+  if (damage > 0) {
+    state.events.push({
+      tick: state.tick,
+      type: 'playerHit',
+      message: `${target.name} took ${damage} damage from ${attacker.name}`,
+      playerId: target.id,
+      targetId: attacker.id,
+    });
+  }
 
   if (target.hp <= 0) {
     target.hp = 0;

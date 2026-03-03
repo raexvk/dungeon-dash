@@ -9,8 +9,7 @@ import type {
   BufferedInput,
 } from '../app/game/types';
 import { CLASS_STATS, PLAYER_COLORS } from '../app/game/types';
-import { initializeGameFromConfig } from '../app/game/engine';
-import { processMultiplayerTick } from '../app/game/engine';
+import { initializeGameFromConfig, processInputs, processSimulation } from '../app/game/engine';
 import { buildScoreEntries, calculateHighlights } from '../app/game/scoring';
 import { MP_LEVELS } from '../app/game/mp-levels';
 
@@ -31,6 +30,14 @@ export class GameRoom {
   private currentLevel: number = 0;
   private startTime: number = 0;
   private hostDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastBroadcastState: {
+    players: any[];
+    monsters: any[];
+    boss: any | null;
+    items: any[];
+    key: any;
+    door: any;
+  } | null = null;
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -174,34 +181,39 @@ export class GameRoom {
     this.gameState = initializeGameFromConfig(config, level, playerDefs);
     this.startTime = Date.now();
 
+    this.lastBroadcastState = null;
+
     this.broadcast({
       type: 'gameStart',
       level,
       state: this.gameState,
     } as ServerMessage);
 
-    // Start 30Hz tick loop
+    // Snapshot initial state for delta computation
+    this.snapshotBroadcastState();
+
+    // Start 60Hz tick loop
     this.tickInterval = setInterval(() => {
       if (!this.gameState) return;
 
-      processMultiplayerTick(this.gameState);
+      this.gameState.tick++;
 
-      // Broadcast state at 10Hz (every 3rd tick)
+      // 60Hz — process inputs every tick for snappy response
+      processInputs(this.gameState);
+
+      // 30Hz — game simulation every 2nd tick (timers/speeds stay calibrated)
+      if (this.gameState.tick % 2 === 0) {
+        processSimulation(this.gameState);
+      }
+
+      // 20Hz — broadcast delta every 3rd tick
       if (this.gameState.tick % 3 === 0) {
-        this.broadcast({
-          type: 'state',
-          tick: this.gameState.tick,
-          players: this.gameState.players,
-          monsters: this.gameState.monsters,
-          boss: this.gameState.boss,
-          items: this.gameState.items,
-          key: this.gameState.key,
-          door: this.gameState.door,
-          telegraphs: this.gameState.telegraphs,
-          hazards: this.gameState.hazards,
-          projectiles: this.gameState.projectiles,
-          events: this.gameState.events.slice(-5),
-        } as ServerMessage);
+        // Full resync every 60th tick (1/sec safety net)
+        if (this.gameState.tick % 60 === 0) {
+          this.broadcastFullState();
+        } else {
+          this.broadcastDelta();
+        }
       }
 
       // Check for level summary
@@ -212,7 +224,7 @@ export class GameRoom {
       if (this.gameState.phase === 'gameOver') {
         this.handleGameOver();
       }
-    }, 33);
+    }, 16);
   }
 
   private handleInput(
@@ -348,6 +360,170 @@ export class GameRoom {
     } as ServerMessage);
 
     this.endGame();
+  }
+
+  private snapshotBroadcastState(): void {
+    if (!this.gameState) return;
+    this.lastBroadcastState = {
+      players: this.gameState.players.map((p) => ({
+        id: p.id,
+        r: p.r,
+        c: p.c,
+        hp: p.hp,
+        alive: p.alive,
+        facing: p.facing,
+        hasKey: p.hasKey,
+        shield: p.shield,
+        invulnFrames: p.invulnFrames,
+        score: p.score,
+        attackCooldown: p.attackCooldown,
+        moveEnergy: p.moveEnergy,
+        shootEnergy: p.shootEnergy,
+        respawnTimer: p.respawnTimer,
+        respawnsLeft: p.respawnsLeft,
+        speedBoost: p.speedBoost,
+        lastProcessedSeq: p.lastProcessedSeq,
+      })),
+      monsters: this.gameState.monsters.map((m) => ({
+        id: m.id,
+        r: m.r,
+        c: m.c,
+        hp: m.hp,
+        alive: m.alive,
+        stunTimer: m.stunTimer,
+      })),
+      boss: this.gameState.boss
+        ? {
+            r: this.gameState.boss.r,
+            c: this.gameState.boss.c,
+            hp: this.gameState.boss.hp,
+            alive: this.gameState.boss.alive,
+            phase: this.gameState.boss.phase,
+            enraged: this.gameState.boss.enraged,
+            stunTimer: this.gameState.boss.stunTimer,
+          }
+        : null,
+      items: this.gameState.items.map((i) => ({
+        id: i.id,
+        collected: i.collected,
+      })),
+      key: { ...this.gameState.key },
+      door: { ...this.gameState.door },
+    };
+  }
+
+  private broadcastFullState(): void {
+    if (!this.gameState) return;
+    this.broadcast({
+      type: 'state',
+      tick: this.gameState.tick,
+      players: this.gameState.players,
+      monsters: this.gameState.monsters,
+      boss: this.gameState.boss,
+      items: this.gameState.items,
+      key: this.gameState.key,
+      door: this.gameState.door,
+      telegraphs: this.gameState.telegraphs,
+      hazards: this.gameState.hazards,
+      projectiles: this.gameState.projectiles,
+      events: this.gameState.events.slice(-5),
+    } as ServerMessage);
+    this.snapshotBroadcastState();
+  }
+
+  private broadcastDelta(): void {
+    if (!this.gameState || !this.lastBroadcastState) {
+      this.broadcastFullState();
+      return;
+    }
+
+    const gs = this.gameState;
+    const last = this.lastBroadcastState;
+    const delta: any = {
+      type: 'delta',
+      tick: gs.tick,
+      telegraphs: gs.telegraphs,
+      hazards: gs.hazards,
+      projectiles: gs.projectiles,
+      events: gs.events.slice(-5),
+    };
+
+    // Players: only include changed ones
+    const PLAYER_KEYS = [
+      'r', 'c', 'hp', 'alive', 'facing', 'hasKey', 'shield',
+      'invulnFrames', 'score', 'attackCooldown', 'moveEnergy', 'shootEnergy',
+      'respawnTimer', 'respawnsLeft', 'speedBoost', 'lastProcessedSeq',
+    ] as const;
+    const changedPlayers: any[] = [];
+    for (const p of gs.players) {
+      const old = last.players.find((lp: any) => lp.id === p.id);
+      if (!old) {
+        changedPlayers.push(p);
+        continue;
+      }
+      let changed = false;
+      for (const k of PLAYER_KEYS) {
+        if ((p as any)[k] !== old[k]) { changed = true; break; }
+      }
+      if (changed) changedPlayers.push(p);
+    }
+    if (changedPlayers.length > 0) delta.players = changedPlayers;
+
+    // Monsters: only include changed ones
+    const changedMonsters: any[] = [];
+    for (const m of gs.monsters) {
+      const old = last.monsters.find((lm: any) => lm.id === m.id);
+      if (!old) {
+        changedMonsters.push(m);
+        continue;
+      }
+      if (
+        m.r !== old.r || m.c !== old.c || m.hp !== old.hp ||
+        m.alive !== old.alive || m.stunTimer !== old.stunTimer
+      ) {
+        changedMonsters.push(m);
+      }
+    }
+    if (changedMonsters.length > 0) delta.monsters = changedMonsters;
+
+    // Boss
+    if (gs.boss && last.boss) {
+      const b = gs.boss;
+      const ob = last.boss;
+      if (
+        b.r !== ob.r || b.c !== ob.c || b.hp !== ob.hp ||
+        b.alive !== ob.alive || b.phase !== ob.phase ||
+        b.enraged !== ob.enraged || b.stunTimer !== ob.stunTimer
+      ) {
+        delta.boss = gs.boss;
+      }
+    } else if (gs.boss !== null && last.boss === null) {
+      delta.boss = gs.boss;
+    }
+
+    // Items: only include changed collected status
+    const changedItems: any[] = [];
+    for (const item of gs.items) {
+      const old = last.items.find((li: any) => li.id === item.id);
+      if (!old || item.collected !== old.collected) {
+        changedItems.push(item);
+      }
+    }
+    if (changedItems.length > 0) delta.items = changedItems;
+
+    // Key/door: only if changed
+    if (
+      gs.key.exists !== last.key.exists || gs.key.r !== last.key.r ||
+      gs.key.c !== last.key.c || gs.key.heldBy !== last.key.heldBy
+    ) {
+      delta.key = gs.key;
+    }
+    if (gs.door.open !== last.door.open) {
+      delta.door = gs.door;
+    }
+
+    this.broadcast(delta as ServerMessage);
+    this.snapshotBroadcastState();
   }
 
   private broadcast(msg: ServerMessage): void {

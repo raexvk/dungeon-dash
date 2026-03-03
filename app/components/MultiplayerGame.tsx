@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GameCanvas } from './GameCanvas';
-import { HUD } from './HUD';
+import { HUD, PlayerBar } from './HUD';
 import { EventFeed } from './EventFeed';
 import { Minimap } from './Minimap';
 import { DeathOverlay } from './DeathOverlay';
@@ -10,6 +10,7 @@ import { LevelSummary } from './LevelSummary';
 import { Leaderboard } from './Leaderboard';
 import { useInput } from '~/hooks/useInput';
 import { useWebSocket } from '~/hooks/useWebSocket';
+import { getSessionCookie, clearSessionCookie } from '~/utils/sessionCookie';
 import { playSound, startBGM, stopBGM } from '~/renderer/audio';
 import type {
   GameState,
@@ -18,7 +19,9 @@ import type {
   AbilityType,
   ScoreEntry,
   Highlight,
+  Player,
 } from '~/game/types';
+import { canMoveTo, monsterAt, bossAt } from '~/game/combat';
 
 interface MultiplayerGameProps {
   roomCode: string;
@@ -27,7 +30,11 @@ interface MultiplayerGameProps {
 export function MultiplayerGame({ roomCode }: MultiplayerGameProps) {
   const navigate = useNavigate();
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [localPlayerId, setLocalPlayerId] = useState(0);
+  const [localPlayerId] = useState(() => {
+    const session = getSessionCookie(roomCode);
+    if (session && session.roomCode === roomCode) return session.playerId;
+    return -1;
+  });
   const [levelName, setLevelName] = useState('');
   const [showTransition, setShowTransition] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
@@ -42,26 +49,64 @@ export function MultiplayerGame({ roomCode }: MultiplayerGameProps) {
   } | null>(null);
   const seqRef = useRef(0);
   const stateRef = useRef<GameState | null>(null);
+  const pendingInputsRef = useRef<{ seq: number; dir: { dr: number; dc: number }; prevR: number; prevC: number }[]>([]);
+  const deltaCountRef = useRef(0);
 
   // Stop BGM on unmount
   useEffect(() => {
     return () => stopBGM();
   }, []);
 
+  // Redirect to lobby if no valid session
+  useEffect(() => {
+    if (localPlayerId === -1) navigate(`/lobby/${roomCode}`);
+  }, [localPlayerId, navigate, roomCode]);
+
   const wsUrl =
     typeof window !== 'undefined'
       ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/rooms/${roomCode}/ws`
       : '';
 
+  // Reconcile predicted inputs against server-acknowledged position
+  const reconcilePrediction = useCallback((localPlayer: Player) => {
+    const pending = pendingInputsRef.current;
+    const acked = localPlayer.lastProcessedSeq ?? -1;
+
+    // Drop all inputs the server has already processed
+    while (pending.length > 0 && pending[0].seq <= acked) {
+      pending.shift();
+    }
+
+    // Re-apply remaining unacknowledged move inputs on top of server position
+    if (pending.length > 0 && stateRef.current) {
+      let r = localPlayer.r;
+      let c = localPlayer.c;
+      for (const input of pending) {
+        const nr = r + input.dir.dr;
+        const nc = c + input.dir.dc;
+        if (
+          canMoveTo(stateRef.current.grid, nr, nc, stateRef.current.door) &&
+          !monsterAt(stateRef.current.monsters, nr, nc) &&
+          !bossAt(stateRef.current.boss, nr, nc)
+        ) {
+          r = nr;
+          c = nc;
+        }
+      }
+      localPlayer.r = r;
+      localPlayer.c = c;
+    }
+  }, []);
+
   const onMessage = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
       case 'gameStart': {
         const state = msg.state;
-        // visibilityMaps is a Map but JSON serialization turns it into {}.
-        // Reconstitute it as an empty Map (server doesn't track visibility per-client).
         if (!(state.visibilityMaps instanceof Map)) {
           state.visibilityMaps = new Map();
         }
+        pendingInputsRef.current = [];
+        deltaCountRef.current = 0;
         stateRef.current = state;
         setGameState({ ...state });
         setShowTransition(true);
@@ -98,10 +143,95 @@ export function MultiplayerGame({ roomCode }: MultiplayerGameProps) {
           stateRef.current.door = msg.door;
           stateRef.current.telegraphs = msg.telegraphs;
           stateRef.current.hazards = msg.hazards;
-          stateRef.current.projectiles = (msg as any).projectiles ?? stateRef.current.projectiles;
+          stateRef.current.projectiles = msg.projectiles;
           stateRef.current.events = msg.events;
           stateRef.current.tick = msg.tick;
+
+          // Reconcile client prediction for local player
+          const lp = stateRef.current.players.find((p) => p.id === localPlayerId);
+          if (lp) reconcilePrediction(lp);
+
           setGameState({ ...stateRef.current });
+        }
+        break;
+      case 'delta':
+        if (stateRef.current) {
+          const cur = stateRef.current;
+          cur.tick = msg.tick;
+
+          // Merge changed players
+          if (msg.players) {
+            for (const newP of msg.players) {
+              const idx = cur.players.findIndex((p) => p.id === newP.id);
+              if (idx >= 0) {
+                const old = cur.players[idx];
+                // Preserve render positions for lerp continuity
+                const rx = old.renderX;
+                const ry = old.renderY;
+                Object.assign(old, newP);
+                old.renderX = rx;
+                old.renderY = ry;
+              }
+            }
+          }
+
+          // Merge changed monsters
+          if (msg.monsters) {
+            for (const newM of msg.monsters) {
+              const idx = cur.monsters.findIndex((m) => m.id === newM.id);
+              if (idx >= 0) {
+                const old = cur.monsters[idx];
+                const rx = old.renderX;
+                const ry = old.renderY;
+                Object.assign(old, newM);
+                old.renderX = rx;
+                old.renderY = ry;
+              }
+            }
+          }
+
+          // Merge boss if changed
+          if (msg.boss !== undefined) {
+            if (msg.boss && cur.boss) {
+              const rx = cur.boss.renderX;
+              const ry = cur.boss.renderY;
+              Object.assign(cur.boss, msg.boss);
+              cur.boss.renderX = rx;
+              cur.boss.renderY = ry;
+            } else {
+              cur.boss = msg.boss;
+            }
+          }
+
+          // Merge changed items
+          if (msg.items) {
+            for (const newI of msg.items) {
+              const idx = cur.items.findIndex((i) => i.id === newI.id);
+              if (idx >= 0) {
+                Object.assign(cur.items[idx], newI);
+              }
+            }
+          }
+
+          // Replace key/door if present
+          if (msg.key) cur.key = msg.key;
+          if (msg.door) cur.door = msg.door;
+
+          // Always replace volatile arrays
+          cur.telegraphs = msg.telegraphs;
+          cur.hazards = msg.hazards;
+          cur.projectiles = msg.projectiles;
+          cur.events = msg.events;
+
+          // Reconcile client prediction for local player
+          const lp = cur.players.find((p) => p.id === localPlayerId);
+          if (lp) reconcilePrediction(lp);
+
+          // Throttle React re-renders to every 2nd delta (~10Hz)
+          deltaCountRef.current++;
+          if (deltaCountRef.current % 2 === 0) {
+            setGameState({ ...cur });
+          }
         }
         break;
       case 'levelSummary':
@@ -120,18 +250,19 @@ export function MultiplayerGame({ roomCode }: MultiplayerGameProps) {
         console.error('Server error:', msg.message);
         break;
     }
-  }, []);
+  }, [localPlayerId, reconcilePrediction]);
 
-  const reconnectMsg = JSON.stringify({ type: 'reconnect', playerId: localPlayerId });
+  const reconnectMsg = localPlayerId >= 0
+    ? JSON.stringify({ type: 'reconnect', playerId: localPlayerId })
+    : '';
 
   const { send } = useWebSocket({
     url: wsUrl,
     onMessage,
     onOpen: (ws) => {
-      // Send reconnect directly on the raw WebSocket
-      ws.send(reconnectMsg);
+      if (reconnectMsg) ws.send(reconnectMsg);
     },
-    enabled: typeof window !== 'undefined',
+    enabled: typeof window !== 'undefined' && localPlayerId >= 0,
   });
 
   const handleInput = useCallback(
@@ -142,16 +273,44 @@ export function MultiplayerGame({ roomCode }: MultiplayerGameProps) {
     ) => {
       if (action === 'move') playSound('footstep');
       if (action === 'attack') playSound('swordClang');
+      if (action === 'useAbility') playSound('swordClang');
+
+      const seq = seqRef.current++;
+
+      // Client-side prediction for move actions
+      if (action === 'move' && dir && stateRef.current) {
+        const cur = stateRef.current;
+        const lp = cur.players.find((p) => p.id === localPlayerId);
+        if (lp && lp.alive) {
+          const nr = lp.r + dir.dr;
+          const nc = lp.c + dir.dc;
+          if (
+            canMoveTo(cur.grid, nr, nc, cur.door) &&
+            !monsterAt(cur.monsters, nr, nc) &&
+            !bossAt(cur.boss, nr, nc)
+          ) {
+            pendingInputsRef.current.push({
+              seq,
+              dir,
+              prevR: lp.r,
+              prevC: lp.c,
+            });
+            lp.r = nr;
+            lp.c = nc;
+            setGameState({ ...cur });
+          }
+        }
+      }
 
       send({
         type: 'input',
-        seq: seqRef.current++,
+        seq,
         action,
         dir,
         ability,
       });
     },
-    [send],
+    [send, localPlayerId],
   );
 
   useInput(handleInput, !!gameState && !showSummary && !showLeaderboard);
@@ -183,14 +342,15 @@ export function MultiplayerGame({ roomCode }: MultiplayerGameProps) {
   return (
     <div
       style={{
-        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
         width: '100vw',
         height: '100vh',
         background: '#0A0A0F',
         overflow: 'hidden',
       }}
     >
-      <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <GameCanvas
           gameState={gameState}
           localPlayerId={localPlayerId}
@@ -221,6 +381,8 @@ export function MultiplayerGame({ roomCode }: MultiplayerGameProps) {
         )}
       </div>
 
+      <PlayerBar players={gameState.players} localPlayerId={localPlayerId} />
+
       <DeathOverlay
         visible={isDead}
         respawnTimer={localPlayer?.respawnTimer ?? 0}
@@ -247,8 +409,8 @@ export function MultiplayerGame({ roomCode }: MultiplayerGameProps) {
         <Leaderboard
           rankings={leaderboardData.rankings}
           highlights={leaderboardData.highlights}
-          onPlayAgain={() => navigate('/')}
-          onMainMenu={() => navigate('/')}
+          onPlayAgain={() => { clearSessionCookie(roomCode); navigate('/'); }}
+          onMainMenu={() => { clearSessionCookie(roomCode); navigate('/'); }}
         />
       )}
     </div>

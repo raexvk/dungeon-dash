@@ -85,6 +85,10 @@ export interface Player {
   respawnsLeft: number;
   invulnFrames: number;
   attackCooldown: number;
+  moveEnergy: number;
+  maxMoveEnergy: number;
+  shootEnergy: number;
+  maxShootEnergy: number;
   hasKey: boolean;
   shield: boolean;
   speedBoost: number;
@@ -108,6 +112,7 @@ export interface Player {
   connected: boolean;
   afkTimer: number;
   inputBuffer: BufferedInput[];
+  lastProcessedSeq: number;
 
   // Render (client-only)
   renderX?: number;
@@ -322,6 +327,21 @@ export type ServerMessage =
       door: DoorState;
       telegraphs: Telegraph[];
       hazards: Hazard[];
+      projectiles: Projectile[];
+      events: GameEvent[];
+    }
+  | {
+      type: 'delta';
+      tick: number;
+      players?: Player[];
+      monsters?: Monster[];
+      boss?: Boss | null;
+      items?: GroundItem[];
+      key?: KeyState;
+      door?: DoorState;
+      telegraphs: Telegraph[];
+      hazards: Hazard[];
+      projectiles: Projectile[];
       events: GameEvent[];
     }
   | { type: 'levelSummary'; level: number; scores: ScoreEntry[]; mvp: number }

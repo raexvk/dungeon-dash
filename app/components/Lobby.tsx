@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWebSocket } from '~/hooks/useWebSocket';
+import { getSessionCookie, setSessionCookie } from '~/utils/sessionCookie';
 import type {
   LobbyPlayer,
   PlayerClass,
@@ -17,12 +18,49 @@ const CLASSES: PlayerClass[] = ['knight', 'rogue', 'mage', 'ranger', 'bard'];
 export function Lobby({ roomCode }: LobbyProps) {
   const navigate = useNavigate();
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
-  const [localId, setLocalId] = useState(-1);
+  const [localId, setLocalId] = useState(() => {
+    const s = getSessionCookie(roomCode);
+    return s ? s.playerId : -1;
+  });
   const [isHost, setIsHost] = useState(false);
-  const [name, setName] = useState('');
-  const [classType, setClassType] = useState<PlayerClass>('knight');
+  const [name, setName] = useState(() => {
+    const s = getSessionCookie(roomCode);
+    return s ? s.playerName : '';
+  });
+  const [classType, setClassType] = useState<PlayerClass>(() => {
+    const s = getSessionCookie(roomCode);
+    return s && CLASSES.includes(s.classType as PlayerClass) ? s.classType as PlayerClass : 'knight';
+  });
   const [joined, setJoined] = useState(false);
   const [error, setError] = useState('');
+  const [roomValid, setRoomValid] = useState<boolean | null>(null);
+
+  // Validate room code on mount
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/rooms/${roomCode}/status`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (!data.roomCode || data.phase === 'ended') {
+          setRoomValid(false);
+        } else {
+          setRoomValid(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRoomValid(false);
+      });
+    return () => { cancelled = true; };
+  }, [roomCode]);
+
+  // Redirect to home after showing error for invalid room
+  useEffect(() => {
+    if (roomValid === false) {
+      const timer = setTimeout(() => navigate('/'), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [roomValid, navigate]);
 
   const wsUrl =
     typeof window !== 'undefined'
@@ -38,12 +76,14 @@ export function Lobby({ roomCode }: LobbyProps) {
             const me = msg.players[msg.players.length - 1];
             setLocalId(me.id);
             setIsHost(me.isHost);
+            setSessionCookie(roomCode, { playerId: me.id, roomCode, playerName: name, classType });
           } else if (localId >= 0) {
             const me = msg.players.find((p) => p.id === localId);
             if (me) setIsHost(me.isHost);
           }
           break;
         case 'gameStart':
+          setSessionCookie(roomCode, { playerId: localId, roomCode, playerName: name, classType });
           navigate(`/game/${roomCode}`);
           break;
         case 'error':
@@ -51,7 +91,7 @@ export function Lobby({ roomCode }: LobbyProps) {
           break;
       }
     },
-    [localId, navigate, roomCode],
+    [localId, navigate, roomCode, name, classType],
   );
 
   const onWsOpen = useCallback((_ws: WebSocket) => {
@@ -62,7 +102,7 @@ export function Lobby({ roomCode }: LobbyProps) {
     url: wsUrl,
     onMessage,
     onOpen: onWsOpen,
-    enabled: typeof window !== 'undefined',
+    enabled: typeof window !== 'undefined' && roomValid === true,
   });
 
   const handleJoin = useCallback(() => {
@@ -132,6 +172,25 @@ export function Lobby({ roomCode }: LobbyProps) {
     },
   };
 
+  if (roomValid === null) {
+    return (
+      <div style={s.container}>
+        <div style={{ fontSize: 10, color: '#6A6A80' }}>CHECKING ROOM...</div>
+        <div style={s.code}>{roomCode}</div>
+      </div>
+    );
+  }
+
+  if (roomValid === false) {
+    return (
+      <div style={s.container}>
+        <div style={s.code}>{roomCode}</div>
+        <div style={{ color: '#FF4444', fontSize: 12 }}>ROOM NOT FOUND</div>
+        <div style={{ fontSize: 9, color: '#6A6A80' }}>Redirecting to menu...</div>
+      </div>
+    );
+  }
+
   if (!joined) {
     return (
       <div style={s.container}>
@@ -181,12 +240,27 @@ export function Lobby({ roomCode }: LobbyProps) {
     <div style={s.container}>
       <div style={{ fontSize: 10, color: '#6A6A80' }}>ROOM CODE</div>
       <div style={s.code}>{roomCode}</div>
-      <button
-        style={{ ...s.btn, fontSize: 9 }}
-        onClick={() => navigator.clipboard?.writeText(roomCode)}
-      >
-        COPY CODE
-      </button>
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button
+          style={{ ...s.btn, fontSize: 9 }}
+          onClick={() => navigator.clipboard?.writeText(roomCode)}
+        >
+          COPY CODE
+        </button>
+        <button
+          style={{ ...s.btn, fontSize: 9 }}
+          onClick={() => {
+            const url = `${window.location.origin}/lobby/${roomCode}`;
+            if (navigator.share) {
+              navigator.share({ title: 'Dungeon Dash', url });
+            } else {
+              navigator.clipboard?.writeText(url);
+            }
+          }}
+        >
+          SHARE LINK
+        </button>
+      </div>
 
       <div
         style={{

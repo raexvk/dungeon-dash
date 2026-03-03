@@ -50,6 +50,9 @@ export interface RenderState {
   shakeDuration: number;
   time: number;
   deltaTime: number;
+  // Static tile cache
+  staticLayerCanvas: HTMLCanvasElement | OffscreenCanvas | null;
+  staticLayerLevel: number;
 }
 
 // ── Telegraph Color Mapping ──
@@ -101,6 +104,87 @@ const PROJECTILE_COLORS: Record<string, string> = {
   fireball: '#FF6622',
 };
 
+// ── Static Tile Layer Cache ──
+
+function ensureStaticLayer(state: RenderState): void {
+  const { gameState, spriteCache } = state;
+  const { grid } = gameState;
+  const rows = grid.length;
+  const cols = grid[0]?.length ?? 0;
+
+  // Invalidate if level changed or not yet created
+  if (state.staticLayerCanvas && state.staticLayerLevel === gameState.level) {
+    return;
+  }
+
+  const w = cols * TILE;
+  const h = rows * TILE;
+  let canvas: HTMLCanvasElement | OffscreenCanvas;
+  if (typeof OffscreenCanvas !== 'undefined') {
+    canvas = new OffscreenCanvas(w, h);
+  } else {
+    canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+  }
+
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+  if (!ctx) return;
+
+  // Draw floor tiles
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const variant = (r * 11 + c * 17) % 3;
+      const floorSprite = spriteCache?.floor?.[variant];
+      if (floorSprite) {
+        ctx.drawImage(floorSprite, c * TILE, r * TILE, TILE, TILE);
+      } else {
+        ctx.fillStyle = PALETTE.floorDark ?? '#1a1a2e';
+        ctx.fillRect(c * TILE, r * TILE, TILE, TILE);
+      }
+    }
+  }
+
+  // Draw wall tiles
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (grid[r][c] === '#' || grid[r][c] === '=') {
+        const variant = (r * 7 + c * 13) % 4;
+        const wallSprite = spriteCache?.wall?.[variant];
+        if (wallSprite) {
+          ctx.drawImage(wallSprite, c * TILE, r * TILE, TILE, TILE);
+        } else {
+          ctx.fillStyle = PALETTE.stoneDark ?? '#2d2d44';
+          ctx.fillRect(c * TILE, r * TILE, TILE, TILE);
+          ctx.fillStyle = PALETTE.stoneMid ?? '#3d3d55';
+          ctx.fillRect(c * TILE, r * TILE, TILE, TILE - 4);
+        }
+      }
+    }
+  }
+
+  state.staticLayerCanvas = canvas;
+  state.staticLayerLevel = gameState.level;
+}
+
+// ── Viewport Culling Helper ──
+
+function getVisibleRange(
+  cameraX: number,
+  cameraY: number,
+  canvasW: number,
+  canvasH: number,
+  rows: number,
+  cols: number,
+): { startRow: number; endRow: number; startCol: number; endCol: number } {
+  return {
+    startRow: Math.max(0, Math.floor(cameraY / TILE) - 1),
+    endRow: Math.min(rows - 1, Math.floor((cameraY + canvasH) / TILE) + 1),
+    startCol: Math.max(0, Math.floor(cameraX / TILE) - 1),
+    endCol: Math.min(cols - 1, Math.floor((cameraX + canvasW) / TILE) + 1),
+  };
+}
+
 // ── Main Render Function ──
 
 export function renderFrame(
@@ -134,43 +218,21 @@ export function renderFrame(
   ctx.fillStyle = PALETTE.voidBlack;
   ctx.fillRect(-10, -10, cols * TILE + 20, rows * TILE + 20);
 
-  // (d) Draw floor tiles for all cells
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const variant = (r * 11 + c * 17) % 3;
-      const floorSprite = spriteCache?.floor?.[variant];
-      if (floorSprite) {
-        ctx.drawImage(floorSprite, c * TILE, r * TILE, TILE, TILE);
-      } else {
-        // Fallback: dark floor fill
-        ctx.fillStyle = PALETTE.floorDark ?? '#1a1a2e';
-        ctx.fillRect(c * TILE, r * TILE, TILE, TILE);
-      }
-    }
+  // (d+e) Blit cached static floor + wall layer
+  ensureStaticLayer(state);
+  if (state.staticLayerCanvas) {
+    ctx.drawImage(state.staticLayerCanvas as any, 0, 0);
   }
 
-  // (e) Draw wall tiles
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (grid[r][c] === '#' || grid[r][c] === '=') {
-        const variant = (r * 7 + c * 13) % 4;
-        const wallSprite = spriteCache?.wall?.[variant];
-        if (wallSprite) {
-          ctx.drawImage(wallSprite, c * TILE, r * TILE, TILE, TILE);
-        } else {
-          // Fallback: dark wall fill
-          ctx.fillStyle = PALETTE.stoneDark ?? '#2d2d44';
-          ctx.fillRect(c * TILE, r * TILE, TILE, TILE);
-          ctx.fillStyle = PALETTE.stoneMid ?? '#3d3d55';
-          ctx.fillRect(c * TILE, r * TILE, TILE, TILE - 4);
-        }
-      }
-    }
-  }
+  // Compute visible tile range for viewport culling
+  // Use canvas dimensions for the viewport (camera starts at 0,0 before transform)
+  const canvasW = ctx.canvas.width;
+  const canvasH = ctx.canvas.height;
+  const vp = getVisibleRange(0, 0, canvasW, canvasH, rows, cols);
 
-  // (f) Draw special tiles: traps, torches, door/doorOpen, exit portal
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
+  // (f) Draw special tiles: traps, torches, door/doorOpen, exit portal (viewport-culled)
+  for (let r = vp.startRow; r <= vp.endRow; r++) {
+    for (let c = vp.startCol; c <= vp.endCol; c++) {
       const tile = grid[r][c];
       const px = c * TILE;
       const py = r * TILE;
@@ -490,8 +552,23 @@ export function renderFrame(
       ctx.restore();
     }
 
-    // Key indicator
+    // Key holder glow + indicator
     if (player.hasKey) {
+      // Pulsing golden aura
+      const keyPulse = 0.25 + 0.2 * Math.sin(time / 180);
+      const glowRadius = TILE * 1.2;
+      ctx.save();
+      const cx = px + TILE / 2;
+      const cy = py + TILE / 2;
+      const grad = ctx.createRadialGradient(cx, cy, TILE * 0.3, cx, cy, glowRadius);
+      grad.addColorStop(0, `rgba(255, 215, 0, ${keyPulse})`);
+      grad.addColorStop(0.6, `rgba(255, 180, 0, ${keyPulse * 0.4})`);
+      grad.addColorStop(1, 'rgba(255, 150, 0, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(cx - glowRadius, cy - glowRadius, glowRadius * 2, glowRadius * 2);
+      ctx.restore();
+
+      // Key icon
       const keySprite = spriteCache?.key;
       if (keySprite) {
         ctx.drawImage(keySprite, px + TILE - 10, py - 6, 12, 12);
@@ -548,11 +625,18 @@ export function renderFrame(
     ctx.globalAlpha = 1.0;
   }
 
-  // (n) Draw torch glow using additive blending
+  // (n) Draw torch glow using additive blending (viewport-culled with 3-tile margin)
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
 
+  const glowMargin = 3;
   for (const torch of torches) {
+    // Skip torches outside viewport + margin
+    if (
+      torch.r < vp.startRow - glowMargin || torch.r > vp.endRow + glowMargin ||
+      torch.c < vp.startCol - glowMargin || torch.c > vp.endCol + glowMargin
+    ) continue;
+
     const tx = torch.c * TILE + TILE / 2;
     const ty = torch.r * TILE + TILE / 2;
     const flicker = 0.8 + 0.2 * Math.sin(time / 200 + torch.r * 3 + torch.c * 7);
@@ -569,11 +653,11 @@ export function renderFrame(
 
   ctx.restore();
 
-  // (o) Draw fog of war overlay
+  // (o) Draw fog of war overlay (viewport-culled)
   const visMap = gameState.visibilityMaps?.get(localPlayerId);
   if (visMap) {
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
+    for (let r = vp.startRow; r <= vp.endRow; r++) {
+      for (let c = vp.startCol; c <= vp.endCol; c++) {
         const vis = visMap[r]?.[c];
         if (vis === 'unexplored') {
           ctx.fillStyle = 'rgba(5, 5, 10, 0.97)';
@@ -582,7 +666,6 @@ export function renderFrame(
           ctx.fillStyle = 'rgba(5, 5, 10, 0.70)';
           ctx.fillRect(c * TILE, r * TILE, TILE, TILE);
         }
-        // 'visible' tiles are not dimmed
       }
     }
   }

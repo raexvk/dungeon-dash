@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 const COLORS = {
   bg: '#0A0A0F',
@@ -26,11 +26,22 @@ export function DeathOverlay({
   onRestart,
   isSolo,
 }: DeathOverlayProps) {
+  const [spectating, setSpectating] = useState(false);
+
+  // When permanently dead (no lives, not solo), show death screen for 2s then switch to spectating
+  useEffect(() => {
+    if (visible && !isSolo && respawnsLeft === 0) {
+      setSpectating(false);
+      const timer = setTimeout(() => setSpectating(true), 2000);
+      return () => clearTimeout(timer);
+    }
+    if (!visible) setSpectating(false);
+  }, [visible, isSolo, respawnsLeft]);
+
   useEffect(() => {
     if (!visible || !isSolo || !onRestart) return;
 
     const handler = (e: KeyboardEvent) => {
-      // Ignore modifier keys alone
       if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
       onRestart();
     };
@@ -38,6 +49,31 @@ export function DeathOverlay({
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [visible, isSolo, onRestart]);
+
+  // Spectating mode: small badge, no blocking overlay
+  if (spectating) {
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          top: 16,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 50,
+          pointerEvents: 'none',
+          fontFamily: FONT,
+          fontSize: 10,
+          color: COLORS.dim,
+          background: 'rgba(10, 10, 15, 0.6)',
+          padding: '6px 16px',
+          borderRadius: 4,
+          border: `1px solid ${COLORS.dim}44`,
+        }}
+      >
+        SPECTATING
+      </div>
+    );
+  }
 
   return (
     <div
@@ -127,29 +163,16 @@ export function DeathOverlay({
           </p>
         </>
       ) : (
-        <>
-          <p
-            style={{
-              fontFamily: FONT,
-              fontSize: 14,
-              color: COLORS.red,
-              margin: 0,
-              textShadow: `0 0 10px ${COLORS.red}66`,
-            }}
-          >
-            NO LIVES REMAINING
-          </p>
-          <p
-            style={{
-              fontFamily: FONT,
-              fontSize: 10,
-              color: COLORS.dim,
-              margin: 0,
-            }}
-          >
-            Spectating...
-          </p>
-        </>
+        <p
+          style={{
+            fontFamily: FONT,
+            fontSize: 14,
+            color: COLORS.dim,
+            margin: 0,
+          }}
+        >
+          Spectating...
+        </p>
       )}
     </div>
   );

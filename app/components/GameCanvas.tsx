@@ -12,7 +12,7 @@ import { buildSpriteCache } from '../renderer/sprites';
 import type { SpriteCache } from '../renderer/sprites';
 import type { Particle } from '../renderer/particles';
 import { updateParticles, spawnParticles } from '../renderer/particles';
-import { playSound } from '../renderer/audio';
+import { playSound, startKeyBGM, stopKeyBGM } from '../renderer/audio';
 
 interface GameCanvasProps {
   gameState: GameState;
@@ -38,10 +38,12 @@ export function GameCanvas(props: GameCanvasProps) {
     shakeDuration: 0,
     time: 0,
     deltaTime: 0,
+    staticLayerCanvas: null,
+    staticLayerLevel: -1,
   });
   const rafIdRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
-  const lastEventCountRef = useRef<number>(0);
+  const lastEventTickRef = useRef<number>(-1);
 
   // Build sprite cache once (lazy init)
   useEffect(() => {
@@ -54,7 +56,7 @@ export function GameCanvas(props: GameCanvasProps) {
   const levelRef = useRef(gameState.level);
   if (gameState.level !== levelRef.current) {
     levelRef.current = gameState.level;
-    lastEventCountRef.current = 0;
+    lastEventTickRef.current = -1;
   }
 
   // Animation loop
@@ -95,11 +97,27 @@ export function GameCanvas(props: GameCanvasProps) {
 
       // Process new game events for visual effects
       const events = gameState.events;
-      const prevCount = lastEventCountRef.current;
-      if (events.length > prevCount) {
-        for (let i = prevCount; i < events.length; i++) {
-          const evt = events[i];
+      const lastTick = lastEventTickRef.current;
+      const newEvents = events.filter(e => e.tick > lastTick);
+      if (newEvents.length > 0) {
+        lastEventTickRef.current = Math.max(...newEvents.map(e => e.tick));
+        for (const evt of newEvents) {
+          // Check if local player is involved (attacker or target)
+          const localInvolved =
+            evt.playerId === localPlayerId ||
+            evt.targetId === localPlayerId ||
+            (typeof evt.targetId === 'number' && evt.targetId === localPlayerId);
+
+          if (evt.type === 'itemPickup') {
+            playSound('damage');
+          } else if (evt.type === 'keyPickup') {
+            startKeyBGM();
+          } else if (evt.type === 'doorOpen') {
+          }
           if (evt.type === 'damage' || evt.type === 'kill' || evt.type === 'bossKill') {
+            if (localInvolved && evt.targetId != null) {
+              playSound('entityHit');
+            }
             // Find attacker and direction
             const attacker = gameState.players.find(p => p.id === evt.playerId);
             const dir = { dr: 0, dc: 1 };
@@ -136,8 +154,15 @@ export function GameCanvas(props: GameCanvasProps) {
             addAttackEffect(state, tx, ty, dir, 'slash');
             if (foundTarget) {
               spawnParticles(state.particles, 'sparks', tx + 16, ty + 16);
+              spawnParticles(state.particles, 'blood', tx + 16, ty + 16);
+              addAttackEffect(state, tx, ty, dir, 'hit');
             }
           } else if (evt.type === 'playerHit') {
+            if (localInvolved) {
+              playSound('entityHit');
+            } else {
+              playSound('swordClang');
+            }
             const hitPlayer = gameState.players.find(p => p.id === evt.playerId);
             if (hitPlayer) {
               const hx = (hitPlayer.renderX ?? hitPlayer.c * 32) + 16;
@@ -147,7 +172,12 @@ export function GameCanvas(props: GameCanvasProps) {
               triggerShake(state, 8);
             }
           } else if (evt.type === 'playerDied') {
-            playSound('death');
+            if (localInvolved) {
+              playSound('entityHit');
+              playSound('death');
+            } else {
+              playSound('swordClang');
+            }
             const deadPlayer = gameState.players.find(p => p.id === evt.playerId);
             if (deadPlayer) {
               spawnParticles(state.particles, 'blood', (deadPlayer.renderX ?? deadPlayer.c * 32) + 16, (deadPlayer.renderY ?? deadPlayer.r * 32) + 16);
@@ -155,7 +185,6 @@ export function GameCanvas(props: GameCanvasProps) {
             }
           }
         }
-        lastEventCountRef.current = events.length;
       }
 
       // Update particles
@@ -183,8 +212,8 @@ export function GameCanvas(props: GameCanvasProps) {
       width={canvasWidth}
       height={canvasHeight}
       style={{
-        width: '100vw',
-        height: '100vh',
+        width: '100%',
+        height: '100%',
         objectFit: 'contain',
         imageRendering: 'pixelated',
         display: 'block',

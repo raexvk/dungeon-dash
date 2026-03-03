@@ -5,6 +5,7 @@ import { MainMenu } from './components/MainMenu';
 import { SoloGame } from './components/SoloGame';
 import { Lobby } from './components/Lobby';
 import { MultiplayerGame } from './components/MultiplayerGame';
+import { Settings } from './components/Settings';
 import './global.css';
 
 function LobbyPage() {
@@ -25,6 +26,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/solo" element={<SoloGame />} />
         <Route path="/lobby/:roomCode" element={<LobbyPage />} />
         <Route path="/game/:roomCode" element={<GamePage />} />
+        <Route path="/settings" element={<Settings />} />
       </Routes>
     </BrowserRouter>
   </StrictMode>,

@@ -5,7 +5,7 @@ export const ITEM_DEFS: Record<ItemType, {
   name: string;
   description: string;
 }> = {
-  healthPotion: { name: 'Health Potion', description: 'Restores 3 HP' },
+  healthPotion: { name: 'Health Potion', description: 'Full heal + increases max HP' },
   gold: { name: 'Gold', description: 'Worth points' },
   shieldOrb: { name: 'Shield Orb', description: 'Blocks one hit' },
   speedScroll: { name: 'Speed Scroll', description: 'Faster movement' },
@@ -71,7 +71,8 @@ export function checkItemPickup(state: GameState, player: Player): void {
 function applyItem(state: GameState, player: Player, item: GroundItem): void {
   switch (item.type) {
     case 'healthPotion':
-      player.hp = Math.min(player.maxHp, player.hp + 3);
+      player.maxHp += 1;         // permanent +1 max HP per bottle
+      player.hp = player.maxHp;  // fully heal (to new max)
       break;
     case 'gold': {
       const val = item.value ?? 50;

@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { clearAllSessionCookies } from '~/utils/sessionCookie';
 
 const COLORS = {
   bg: '#0A0A0F',
@@ -59,6 +60,7 @@ function MenuButton({
 
 export function MainMenu() {
   const navigate = useNavigate();
+  useEffect(() => { clearAllSessionCookies(); }, []);
   const [showJoin, setShowJoin] = useState(false);
   const [roomCode, setRoomCode] = useState('');
   const [creating, setCreating] = useState(false);
@@ -79,10 +81,25 @@ export function MainMenu() {
     }
   };
 
-  const handleJoin = () => {
+  const [joining, setJoining] = useState(false);
+
+  const handleJoin = async () => {
     const code = roomCode.trim().toUpperCase();
-    if (code.length === 4) {
+    if (code.length !== 4 || joining) return;
+    setJoining(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/rooms/${code}/status`);
+      const data = await res.json();
+      if (!data.roomCode || data.phase === 'ended') {
+        setError('Room not found');
+        setJoining(false);
+        return;
+      }
       navigate(`/lobby/${code}`);
+    } catch {
+      setError('Failed to check room');
+      setJoining(false);
     }
   };
 

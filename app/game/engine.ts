@@ -24,6 +24,7 @@ import {
   processProjectiles,
   checkPlayerCollisions,
   canMoveTo,
+  isWalkable,
   isMonsterWalkable,
   deltaToDirection,
   monsterAt,
@@ -46,6 +47,24 @@ export function initializeSoloGame(levelIndex: number): GameState {
       color: PLAYER_COLORS.knight,
     },
   ]);
+}
+
+// Validate spawn is walkable; if not, BFS outward to find nearest walkable tile
+function findNearestWalkable(grid: TileType[][], r: number, c: number): { r: number; c: number } {
+  if (isWalkable(grid, r, c)) return { r, c };
+  const visited = new Set<string>();
+  const queue = [{ r, c }];
+  while (queue.length > 0) {
+    const pos = queue.shift()!;
+    const key = `${pos.r},${pos.c}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (isWalkable(grid, pos.r, pos.c)) return pos;
+    for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+      queue.push({ r: pos.r + dr, c: pos.c + dc });
+    }
+  }
+  return { r, c }; // fallback to original if nothing found
 }
 
 export function initializeGameFromConfig(
@@ -155,7 +174,8 @@ export function initializeGameFromConfig(
   const fallbackSpawn = playerSpawns[0] ?? { r: 1, c: 1 };
   const players: Player[] = playerDefs.map((def, i) => {
     const stats = CLASS_STATS[def.classType];
-    const spawn = playerSpawns[i] ?? fallbackSpawn;
+    const rawSpawn = playerSpawns[i % playerSpawns.length] ?? fallbackSpawn;
+    const spawn = findNearestWalkable(grid, rawSpawn.r, rawSpawn.c);
     return {
       id: i,
       name: def.name,
@@ -175,6 +195,10 @@ export function initializeGameFromConfig(
       respawnsLeft: isSolo ? 0 : 2,
       invulnFrames: 0,
       attackCooldown: 0,
+      moveEnergy: 8,
+      maxMoveEnergy: 8,
+      shootEnergy: 5,
+      maxShootEnergy: 5,
       hasKey: false,
       shield: false,
       speedBoost: 0,
@@ -194,6 +218,7 @@ export function initializeGameFromConfig(
       connected: true,
       afkTimer: 0,
       inputBuffer: [],
+      lastProcessedSeq: -1,
       renderX: spawn.c * 32,
       renderY: spawn.r * 32,
       animFrame: 0,
@@ -286,6 +311,18 @@ export function processSoloTurn(
 
   if (action === 'move' && dir) {
     player.facing = deltaToDirection(dir);
+
+    if (player.moveEnergy <= 0) {
+      // No energy — treat as wait, still process monsters
+      resolveTelegraphs(state);
+      advanceMonsterTurns(state);
+      checkPlayerCollisions(state, player);
+      updateFogForState(state);
+      checkPhaseTransitions(state);
+      return;
+    }
+    player.moveEnergy--;
+
     const nr = player.r + dir.dr;
     const nc = player.c + dir.dc;
 
@@ -311,7 +348,8 @@ export function processSoloTurn(
     const targetMonster = monsterAt(state.monsters, nr, nc);
     const targetBoss = bossAt(state.boss, nr, nc);
     if (targetMonster || targetBoss) {
-      if (player.attackCooldown <= 0) {
+      if (player.attackCooldown <= 0 && player.shootEnergy > 0) {
+        player.shootEnergy--;
         const weaponBonus = player.weapon?.atkBonus ?? 0;
         state.projectiles.push({
           id: `proj-p${player.id}-${state.tick}`,
@@ -357,7 +395,8 @@ export function processSoloTurn(
     player.facing = deltaToDirection(dir);
     player.animFrame = (player.animFrame ?? 0) === 0 ? 1 : 0;
 
-    if (player.attackCooldown <= 0) {
+    if (player.attackCooldown <= 0 && player.shootEnergy > 0) {
+      player.shootEnergy--;
       const weaponBonus = player.weapon?.atkBonus ?? 0;
       state.projectiles.push({
         id: `proj-p${player.id}-${state.tick}`,
@@ -501,28 +540,30 @@ export function checkPhaseTransitions(state: GameState): void {
 
 // ── Multiplayer Tick Processing ──
 
-export function processMultiplayerTick(state: GameState): void {
-  state.tick++;
-
-  // Process buffered inputs
+/** Process buffered inputs only (called at 60Hz on the server). */
+export function processInputs(state: GameState): void {
   for (const player of state.players) {
     if (!player.alive || !player.connected) continue;
     const input = player.inputBuffer.shift();
     if (input) {
       player.afkTimer = 0;
       processPlayerInput(state, player, input);
+      player.lastProcessedSeq = input.seq;
     } else {
       player.afkTimer++;
     }
   }
+}
 
-  // Monster movement (monsterTick manages its own moveTimer internally)
+/** Run game simulation: monsters, combat, hazards, timers, fog, phases (called at 30Hz). */
+export function processSimulation(state: GameState): void {
+  // Monster movement
   for (const monster of state.monsters) {
     if (!monster.alive) continue;
     monsterTick(state, monster);
   }
 
-  // Boss tick (bossTick manages its own moveTimer internally)
+  // Boss tick
   if (state.boss?.alive) {
     bossTick(state, state.boss);
   }
@@ -552,6 +593,13 @@ export function processMultiplayerTick(state: GameState): void {
   checkPhaseTransitions(state);
 }
 
+/** Legacy combined tick — calls both processInputs + processSimulation. */
+export function processMultiplayerTick(state: GameState): void {
+  state.tick++;
+  processInputs(state);
+  processSimulation(state);
+}
+
 function processPlayerInput(
   state: GameState,
   player: Player,
@@ -559,6 +607,10 @@ function processPlayerInput(
 ): void {
   if (input.action === 'move' && input.dir) {
     player.facing = deltaToDirection(input.dir);
+
+    if (player.moveEnergy <= 0) return;
+    player.moveEnergy--;
+
     const nr = player.r + input.dir.dr;
     const nc = player.c + input.dir.dc;
 
@@ -573,7 +625,8 @@ function processPlayerInput(
     const targetMonster = monsterAt(state.monsters, nr, nc);
     const targetBoss = bossAt(state.boss, nr, nc);
     if (targetMonster || targetBoss) {
-      if (player.attackCooldown <= 0) {
+      if (player.attackCooldown <= 0 && player.shootEnergy > 0) {
+        player.shootEnergy--;
         const weaponBonus = player.weapon?.atkBonus ?? 0;
         state.projectiles.push({
           id: `proj-p${player.id}-${state.tick}`,
@@ -598,6 +651,8 @@ function processPlayerInput(
     checkDoorUnlock(state, player);
   } else if (input.action === 'attack' && input.dir) {
     if (player.attackCooldown > 0) return;
+    if (player.shootEnergy <= 0) return;
+    player.shootEnergy--;
     player.facing = deltaToDirection(input.dir);
     player.animFrame = (player.animFrame ?? 0) === 0 ? 1 : 0;
     const weaponBonus = player.weapon?.atkBonus ?? 0;
@@ -625,6 +680,14 @@ function tickTimers(state: GameState): void {
     if (player.abilities.fireball > 0) player.abilities.fireball--;
     if (player.abilities.freeze > 0) player.abilities.freeze--;
 
+    // Energy recharge (use state.tick for timing)
+    if (player.moveEnergy < player.maxMoveEnergy && state.tick % 24 === 0) {
+      player.moveEnergy++;
+    }
+    if (player.shootEnergy < player.maxShootEnergy && state.tick % 45 === 0) {
+      player.shootEnergy++;
+    }
+
     // Respawn timer
     if (!player.alive && player.respawnTimer > 0) {
       player.respawnTimer--;
@@ -632,7 +695,7 @@ function tickTimers(state: GameState): void {
         // Respawn player
         player.respawnsLeft--;
         player.alive = true;
-        player.hp = Math.floor(player.maxHp / 2);
+        player.hp = player.maxHp;
         player.r = player.spawnR;
         player.c = player.spawnC;
         player.invulnFrames = 90; // 3 seconds at 30Hz (MP only)

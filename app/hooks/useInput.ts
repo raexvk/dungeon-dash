@@ -35,7 +35,8 @@ export function useInput(
 
   const lastFacingRef = useRef<{ dr: number; dc: number }>({ dr: 1, dc: 0 });
   const lastMoveTimeRef = useRef<number>(0);
-  const MOVE_COOLDOWN = 200; // ms between moves
+  const lastAttackTimeRef = useRef<number>(0);
+  const MOVE_COOLDOWN = 50; // minimal debounce — energy system handles actual rate limiting
 
   useEffect(() => {
     if (!enabled) return;
@@ -52,15 +53,17 @@ export function useInput(
       if (dir) {
         lastFacingRef.current = dir;
 
-        // Throttle movement speed
-        const now = performance.now();
-        if (now - lastMoveTimeRef.current < MOVE_COOLDOWN) return;
-        lastMoveTimeRef.current = now;
-
         if (e.shiftKey) {
           // Shift+direction = attack in that direction
+          const now = performance.now();
+          if (now - lastAttackTimeRef.current < 50) return;
+          lastAttackTimeRef.current = now;
           onInputRef.current('attack', dir);
         } else {
+          // Throttle movement speed
+          const now = performance.now();
+          if (now - lastMoveTimeRef.current < MOVE_COOLDOWN) return;
+          lastMoveTimeRef.current = now;
           onInputRef.current('move', dir);
         }
         return;
@@ -69,6 +72,9 @@ export function useInput(
       // Space = attack in facing direction
       if (e.key === ' ') {
         e.preventDefault();
+        const now = performance.now();
+        if (now - lastAttackTimeRef.current < 50) return;
+        lastAttackTimeRef.current = now;
         onInputRef.current('attack', lastFacingRef.current);
         return;
       }
